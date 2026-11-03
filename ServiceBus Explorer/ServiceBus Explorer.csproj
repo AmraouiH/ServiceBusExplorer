@@ -1,0 +1,98 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <OutputType>Library</OutputType>
+    <RootNamespace>ServiceBusExplorer</RootNamespace>
+    <!-- Pas d'espace dans le nom de la DLL : xrmtoolbox.com refuse le package sinon -->
+    <AssemblyName>ServiceBusExplorer</AssemblyName>
+    <UseWindowsForms>true</UseWindowsForms>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+
+    <!-- Informations d'assembly (affichées dans XrmToolBox) -->
+    <Version>1.0.0</Version>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+    <Product>ServiceBus Explorer</Product>
+    <AssemblyTitle>ServiceBus Explorer for Dataverse</AssemblyTitle>
+    <Description>Explore Azure Service Bus queues, topics, subscriptions and filters, match them with the Dataverse service endpoints and manage their steps and images.</Description>
+    <Company>AmraouiH</Company>
+    <Copyright>Copyright © 2026</Copyright>
+
+    <!-- Les assemblies XrmToolBox / SDK sont fournies par XrmToolBox : inutile de les copier en sortie -->
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <GenerateBindingRedirectsOutputType>false</GenerateBindingRedirectsOutputType>
+
+    <!-- Débogage : copie de la DLL dans le dossier Plugins de XrmToolBox après chaque build Debug.
+         Désactivable avec : dotnet build -p:DeployToXrmToolBox=false -->
+    <DeployToXrmToolBox Condition="'$(DeployToXrmToolBox)' == ''">true</DeployToXrmToolBox>
+    <XrmToolBoxPluginsDir Condition="'$(XrmToolBoxPluginsDir)' == ''">$(APPDATA)\MscrmTools\XrmToolBox\Plugins</XrmToolBoxPluginsDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Seule dépendance : le package XrmToolBox (inclut le SDK Dataverse et Newtonsoft.Json) -->
+    <PackageReference Include="XrmToolBoxPackage" Version="1.2025.10.74" />
+    <!-- XrmToolBoxPackage 1.2025.10.74 est compilé contre McTools.Xrm.Connection 1.2025.9.64 mais n'en déclare
+         que la 1.2025.7.63 : on épingle la bonne version (dépendance transitive, fournie par XrmToolBox à l'exécution). -->
+    <PackageReference Include="MscrmTools.Xrm.Connection" Version="1.2025.9.64" />
+    <!-- Lecture des messages (peek AMQP) : moteur AMQP du SDK Azure, sans aucune dépendance en net45.
+         Fusionné dans ServiceBusExplorer.dll par ILRepack (types internalisés) : l'outil reste une seule DLL. -->
+    <PackageReference Include="Microsoft.Azure.Amqp" Version="2.7.4" GeneratePathProperty="true" PrivateAssets="all" />
+    <PackageReference Include="ILRepack" Version="2.0.48" GeneratePathProperty="true" PrivateAssets="all" ExcludeAssets="all" />
+    <!-- Assemblies de référence .NET Framework 4.8 (build possible sans le targeting pack installé) -->
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="System.ComponentModel.Composition" />
+    <Reference Include="System.IO.Compression" />
+    <Reference Include="System.Net.Http" />
+    <Reference Include="System.Runtime.Serialization" />
+    <Reference Include="System.Security" />
+    <Reference Include="System.ServiceModel" />
+    <Reference Include="System.Xml.Linq" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="ServiceBusExplorer.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Update="ServiceBusExplorerControl.cs" SubType="UserControl" />
+    <Compile Update="ServiceBusExplorerControl.Layout.cs" DependentUpon="ServiceBusExplorerControl.cs" />
+    <Compile Update="ServiceBusExplorerControl.Explorer.cs" DependentUpon="ServiceBusExplorerControl.cs" />
+    <Compile Update="ServiceBusExplorerControl.Pages.cs" DependentUpon="ServiceBusExplorerControl.cs" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <AmqpAssembly>$(PkgMicrosoft_Azure_Amqp)\lib\net45\Microsoft.Azure.Amqp.dll</AmqpAssembly>
+    <!-- Les projets qui référencent celui-ci (les tests) compilent contre l'assembly d'avant la fusion :
+         ils ne voient pas les types AMQP internalisés, et peuvent utiliser le vrai package sans conflit. -->
+    <ProduceReferenceAssembly>true</ProduceReferenceAssembly>
+  </PropertyGroup>
+
+  <!-- Une seule DLL : Microsoft.Azure.Amqp est fusionné dans la DLL de sortie, ses types deviennent internes
+       (aucun conflit avec un autre outil XrmToolBox qui chargerait sa propre version). Entrée : la DLL compilée dans obj,
+       sortie : bin (l'opération est donc rejouable à chaque build). -->
+  <Target Name="MergeAmqp" AfterTargets="CopyFilesToOutputDirectory">
+    <ItemGroup>
+      <MergeLibDirs Include="@(ReferencePath->'%(RootDir)%(Directory)')" />
+    </ItemGroup>
+    <RemoveDuplicates Inputs="@(MergeLibDirs)">
+      <Output TaskParameter="Filtered" ItemName="MergeLibDirsUnique" />
+    </RemoveDuplicates>
+    <Exec Command="&quot;$(PkgILRepack)\tools\ILRepack.exe&quot; /internalize /noRepackRes /out:&quot;$(TargetPath)&quot; @(MergeLibDirsUnique->'/lib:&quot;%(Identity).&quot;', ' ') &quot;@(IntermediateAssembly->'%(FullPath)')&quot; &quot;$(AmqpAssembly)&quot;" StandardOutputImportance="low" />
+    <Message Importance="high" Text="Microsoft.Azure.Amqp fusionné dans $(TargetFileName)" />
+  </Target>
+
+  <!-- Copie de la DLL (+ pdb) dans %AppData%\MscrmTools\XrmToolBox\Plugins en Debug.
+       ContinueOnError : si XrmToolBox est ouvert, la DLL est verrouillée → simple avertissement. -->
+  <Target Name="DeployPluginToXrmToolBox" AfterTargets="MergeAmqp" Condition="'$(Configuration)' == 'Debug' And '$(DeployToXrmToolBox)' == 'true'">
+    <MakeDir Directories="$(XrmToolBoxPluginsDir)" ContinueOnError="true" />
+    <Copy SourceFiles="$(TargetPath);$(TargetDir)$(TargetName).pdb" DestinationFolder="$(XrmToolBoxPluginsDir)" ContinueOnError="true" SkipUnchangedFiles="false" />
+    <Message Importance="high" Text="ServiceBus Explorer copié dans $(XrmToolBoxPluginsDir)" />
+  </Target>
+
+</Project>
